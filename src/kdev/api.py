@@ -197,10 +197,26 @@ def session_output(creds: Creds, slug: str, version: str = "") -> list[dict]:
             return out
 
 
+#: The status of a notebook that has never been run. Kaggle answers that with
+#: HTTP 404 "No runs found for this kernel" rather than a state -- measured on a
+#: notebook freshly created in the Kaggle editor.
+NEVER_RUN = "NEVER_RUN"
+
+
 def session_status(creds: Creds, slug: str) -> dict:
-    """{"status": ..., "failureMessage": ...} -- the second is why it stopped."""
+    """{"status": ..., "failureMessage": ...} -- the second is why it stopped.
+
+    A 404 means there is no session to report, which is an answer, not a
+    failure: every caller only asks "is something running?". Whether the
+    notebook itself exists is checked where it matters, by GetKernel.
+    """
     user, _, kslug = slug.partition("/")
-    return call(creds, "GetKernelSessionStatus", {"userName": user, "kernelSlug": kslug})
+    try:
+        return call(creds, "GetKernelSessionStatus", {"userName": user, "kernelSlug": kslug})
+    except KaggleError as e:
+        if e.status == 404:
+            return {"status": NEVER_RUN}
+        raise
 
 
 #: Session states that mean the box is, or is about to be, alive.

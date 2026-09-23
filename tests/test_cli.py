@@ -672,3 +672,30 @@ def test_json_output_is_clean_even_when_something_warns(home, kaggle, capsys):
     configured()
     code, out, _ = kdev(capsys, "status", "--json")
     assert code == 0 and json.loads(out)["notebook"] == "alice/box"
+
+
+def test_up_starts_a_notebook_that_has_never_run_and_keeps_its_title(
+    home, kaggle, capsys, monkeypatch
+):
+    """The reported case: a notebook made in the Kaggle editor, joined with
+    `kdev workspace join`, never run. `kdev up` must start it -- and must not
+    rename "v0.1.0_testing" to its slug while doing so."""
+    configured()
+    kaggle.status = api.NEVER_RUN
+    kaggle.logs = READY_LOG
+    monkeypatch.setattr(
+        api,
+        "get_kernel",
+        lambda c, s: {"id": 42, "title": "v0.1.0_testing", "currentVersionNumber": None},
+    )
+    code, out, err = kdev(capsys, "up", "-y")
+    assert code == 0, err
+    assert kaggle.saved[-1]["title"] == "v0.1.0_testing"
+    assert "ready" in out
+
+
+def test_status_of_a_notebook_that_has_never_run(home, kaggle, capsys):
+    configured()
+    kaggle.status = api.NEVER_RUN
+    code, out, _ = kdev(capsys, "status")
+    assert code == 0 and "never run yet" in out and "nothing saved yet" in out

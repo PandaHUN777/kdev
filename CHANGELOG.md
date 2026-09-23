@@ -4,6 +4,17 @@ All notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-09-23
+
+### Fixed
+- `kdev up` failed with "No runs found for this kernel (HTTP 404)" on a
+  notebook that had never been run, such as one just made in the Kaggle
+  editor. Kaggle reports that as a 404 rather than a status; kdev now reads it
+  as "nothing running" and starts the box. The same fix covers `kdev down` and
+  replacing a running box, and `kdev status` says "never run yet".
+- `kdev up` renamed a notebook made in the Kaggle editor to its slug (for
+  example "v0.1.0_testing" became "v0-1-0-testing"). It now keeps the title.
+
 ## [0.1.0] - 2026-09-23
 
 First release.

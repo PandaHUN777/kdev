@@ -98,10 +98,18 @@ def up(
     # later `kdev up` would build on it alone, dropping the history.
     with ui.spinner("finding where you left off…"):
         try:
-            latest = int(api.get_kernel(prof.creds, target).get("currentVersionNumber") or 0)
-        except (api.KaggleError, TypeError, ValueError):
+            meta = api.get_kernel(prof.creds, target)
+        except api.KaggleError:
+            meta = {}
+        try:
+            latest = int(meta.get("currentVersionNumber") or 0)
+        except (TypeError, ValueError):
             latest = 0
         layers = persistence.plan_layers(prof.creds, target, latest)
+    # SaveKernel sets the title it is given: keep the notebook's own, or a
+    # notebook made in the Kaggle editor ("v0.1.0_testing") gets renamed to
+    # its slug ("v0-1-0-testing").
+    title = meta.get("title") or target.split("/")[-1]
     if layers and not restore:
         ui.warn(f"starting empty; {' + '.join(layers)} stays saved for next time")
 
@@ -147,7 +155,7 @@ def up(
         resp = api.save_kernel(
             prof.creds,
             slug=target,
-            title=target.split("/")[-1],
+            title=title,
             source=source,
             machine_shape=api.SHAPES[gpu],
             timeout_seconds=hold,
@@ -502,9 +510,13 @@ def status(
             "ERROR": "ended with an error",
             "CANCEL_ACKNOWLEDGED": "was cancelled",
             "CANCEL_REQUESTED": "is being cancelled",
+            api.NEVER_RUN: "never run yet",
         }
         rows.append(("last run", last.get(info["status"], info["status"].lower())))
-        rows.append(("files", "saved in the notebook; `kdev up` puts them back"))
+        if info["status"] == api.NEVER_RUN:
+            rows.append(("files", "nothing saved yet; `kdev up` starts it"))
+        else:
+            rows.append(("files", "saved in the notebook; `kdev up` puts them back"))
     if box.get("run_by"):
         rows.append(("started by", box["run_by"]))
     if box.get("ends"):

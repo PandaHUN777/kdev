@@ -74,3 +74,23 @@ def test_live_states_are_the_ones_that_still_cost_quota():
 
     assert {"RUNNING", "QUEUED"} == api.LIVE_STATES
     assert "COMPLETE" not in api.LIVE_STATES
+
+
+def test_a_notebook_that_has_never_run_is_a_status_not_an_error(monkeypatch):
+    """Measured on a notebook made in the Kaggle editor: GetKernelSessionStatus
+    answers 404 "No runs found for this kernel". `kdev up` treated that as
+    fatal; it only means nothing is running."""
+
+    def never_run(creds, method, payload=None, service=api.KERNELS, attempts=3):
+        raise api.KaggleError(f"{method}: No runs found for this kernel. (HTTP 404)", 404)
+
+    monkeypatch.setattr(api, "call", never_run)
+    assert api.session_status(api.Creds("u"), "a/b") == {"status": api.NEVER_RUN}
+    assert api.NEVER_RUN not in api.LIVE_STATES
+
+    def denied(creds, method, payload=None, service=api.KERNELS, attempts=3):
+        raise api.KaggleError(f"{method}: Permission denied (HTTP 403)", 403)
+
+    monkeypatch.setattr(api, "call", denied)
+    with pytest.raises(api.KaggleError):
+        api.session_status(api.Creds("u"), "a/b")  # other failures still surface
