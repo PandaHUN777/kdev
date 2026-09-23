@@ -128,7 +128,7 @@ def _ssh(
     alias: str, command: str, stdin: str | None = None, timeout: int = 120
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", alias, command],
+        ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", alias, command],
         input=stdin,
         capture_output=True,
         text=True,
@@ -177,6 +177,7 @@ def follow(alias: str, progress=None) -> tuple[bool, dict]:
         proc = subprocess.Popen(
             [
                 "ssh",
+                "-T",
                 "-o",
                 "BatchMode=yes",
                 "-o",
@@ -222,7 +223,7 @@ def wait_reachable(alias: str, timeout: int = 180) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         r = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias, "true"],
+            ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias, "true"],
             capture_output=True,
         )
         if r.returncode == 0:

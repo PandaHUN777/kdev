@@ -31,7 +31,7 @@ def reachable(alias: str, timeout: int = 10) -> bool:
         return False
     try:
         r = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}", alias, "true"],
+            ["ssh", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}", alias, "true"],
             capture_output=True,
             timeout=timeout + 15,
         )

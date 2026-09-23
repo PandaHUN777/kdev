@@ -34,6 +34,8 @@ def render_block(
         f"    StrictHostKeyChecking accept-new\n"
         f"    ServerAliveInterval 30\n"
         f"    ServerAliveCountMax 10\n"
+        # For `ssh kaggle htop`. kdev's own background ssh calls pass -T: a tty
+        # there puts this terminal in raw mode and smears the live board.
         f"    RequestTTY yes\n"
         f"{END}\n"
     )

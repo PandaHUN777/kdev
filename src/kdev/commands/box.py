@@ -266,6 +266,7 @@ def _stop_and_wait(cfg: config.Config, creds: api.Creds, target: str, timeout: i
             r = subprocess.run(
                 [
                     "ssh",
+                    "-T",
                     "-o",
                     "BatchMode=yes",
                     cfg.ssh_host_alias,
@@ -390,6 +391,7 @@ def down(
         r = subprocess.run(
             [
                 "ssh",
+                "-T",
                 "-o",
                 "BatchMode=yes",
                 "-o",

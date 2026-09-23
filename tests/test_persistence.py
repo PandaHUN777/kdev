@@ -145,3 +145,24 @@ def test_a_brand_new_notebook_has_nothing_to_restore(monkeypatch):
     w = _versions(monkeypatch, {})
     assert w.plan_layers(api.Creds("u"), "a/b", 0) == []
     assert w.plan_layers(api.Creds("u"), "a/b", 3) == []
+
+
+def test_background_ssh_never_asks_for_a_tty(monkeypatch):
+    """The kdev ssh block says RequestTTY yes, so without -T every background
+    probe took over the terminal (raw mode) and smeared the live board."""
+    import subprocess
+
+    from kdev import persistence, session
+
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    persistence.wait_reachable("kaggle")
+    persistence.box_state("kaggle")
+    session.reachable("kaggle")
+    assert len(calls) == 3
+    assert all(argv[:2] == ["ssh", "-T"] for argv in calls), calls
