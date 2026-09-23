@@ -176,9 +176,23 @@ def test_state_says_not_restored_until_it_is(env):
 
 
 def test_metadata_is_not_recorded_mid_restore(env, tmp_path):
+    """While a restore runs, the tree is half-built; recording it would save a
+    half-set of links. The "running restore" here is a real process whose
+    command line names kdev_box.py, so Linux checks it through /proc (as on the
+    Kaggle box) and macOS by pid -- a stand-in pid would only pass on one."""
+    import subprocess
+    import sys
+
     (tmp_path / "run").mkdir()
-    (tmp_path / "run/restore.pid").write_text(str(os.getpid()))  # "running"
-    assert box.record_meta() is False
+    restore = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", "/root/.kdev/kdev_box.py"]
+    )
+    try:
+        (tmp_path / "run/restore.pid").write_text(str(restore.pid))
+        assert box.record_meta() is False
+    finally:
+        restore.kill()
+        restore.wait()
     (tmp_path / "run/restore.pid").unlink()
     assert box.record_meta() is True
     assert (env / ".kdev/meta.json").exists()
