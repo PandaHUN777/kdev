@@ -11,7 +11,7 @@ from ._common import box_label
 
 def setup() -> None:
     """Get this machine ready. Safe to re-run: only does what is missing."""
-    wizard.run()
+    session.ssh_ready(wizard.run())
 
 
 def overview(run_command) -> None:

@@ -415,6 +415,10 @@ def choose(question: str, options: Iterable[tuple[str, str]]) -> str:
 
 
 def confirm(question: str, default: bool = True) -> bool:
+    """Without a terminal nobody can answer: take the default, which is "no"
+    wherever saying yes would lose something."""
+    if not interactive():
+        return default
     answer = questionary.confirm(question, default=default, style=STYLE, qmark=g("prompt")).ask()
     if answer is None:
         raise Cancelled()

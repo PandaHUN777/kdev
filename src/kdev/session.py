@@ -12,7 +12,8 @@ import subprocess
 import time
 from collections.abc import Callable
 
-from . import api, bootstrap, config, persistence, ui
+from . import api, bootstrap, cloudflared, config, persistence, sshcfg, ui
+from .errors import KdevError
 
 #: A session that never reports a tunnel is using quota for nothing, so the
 #: wait is bounded. Kaggle's own queue can be slow, hence the generous default.
@@ -23,6 +24,24 @@ _STAGE = re.compile(rf"{bootstrap.STAGE_MARKER} (\w+)")
 _SESSION = re.compile(r"KDEV_SESSION id=(\d+)(?: by=(\S*))?")
 
 EDITORS = ("code", "cursor", "code-insiders", "windsurf")
+
+
+def ssh_ready(cfg: config.Config) -> None:
+    """Make `ssh <alias>` -- and VS Code's host of that name -- work here.
+
+    A named tunnel's hostname never changes, so the block needs no box to look
+    at: a machine that did not start the running box, or that ran `kdev down`
+    on the last one, can still reach the next.
+    """
+    if cfg.tunnel_hostname and cfg.ssh_host_alias and not sshcfg.has_block():
+        sshcfg.write(cfg.ssh_host_alias, cfg.tunnel_hostname, cloudflared_path=cloudflared.find())
+
+
+def box_gone(cfg: config.Config) -> None:
+    """After a box stops. Only a quick tunnel's block is stale now: its
+    hostname dies with the box. A named one is where the next box will be."""
+    if not cfg.tunnel_hostname:
+        sshcfg.clear()
 
 
 def reachable(alias: str, timeout: int = 10) -> bool:
@@ -75,8 +94,58 @@ def await_ready(
     return None
 
 
+#: How long a stopped box may take to save. Kaggle uploads /kaggle/working
+#: before it calls the run finished: measured ~110 s for 1 GB.
+SAVE_TIMEOUT = 1800
+
+#: find_live_box's answer for a box that was told to stop and is saving.
+STOPPING = "stopping"
+
+
+def wait_saved(
+    creds: api.Creds, slug: str, running_too: bool = False, timeout: int = SAVE_TIMEOUT
+) -> None:
+    """Block while a session that stopped is still saving its files.
+
+    Planning a restore before then builds on a partial or older version, and
+    everything done in the session that stopped is dropped from then on. A
+    cancelled box saves as CANCEL_REQUESTED; one told to stop saves while
+    still RUNNING, which is `running_too`.
+    """
+    busy = {api.SAVING, *(api.LIVE_STATES if running_too else ())}
+    deadline = time.time() + timeout
+    while api.session_status(creds, slug).get("status") in busy:
+        if time.time() > deadline:
+            raise KdevError(
+                "The last session is still saving its files.",
+                "Starting now would leave them out. Try again in a few minutes.",
+            )
+        time.sleep(3)
+
+
+def stopping(creds: api.Creds, slug: str, window: float = 20) -> bool:
+    """Whether the running box was already told to stop, and is saving.
+
+    After `kdev down` Kaggle keeps the run RUNNING for as long as the upload
+    takes -- minutes, for a few GB -- with the tunnel already gone: from
+    outside, just like a live box that cannot be reached. Its log says which.
+    """
+    deadline = time.time() + window
+    try:
+        # A box told to stop logs it within 5 s; `idle` outlasts that.
+        for line in api.stream_logs(creds, slug, wait_seconds=30, idle=8):
+            if "KDEV_STOP" in line or "KDEV_DONE" in line:
+                return True
+            if time.time() > deadline:
+                break
+    except api.KaggleError:
+        pass
+    return False
+
+
 def find_live_box(cfg: config.Config, creds: api.Creds, target: str) -> str:
-    """Hostname of a kdev box running on `target`, or "" if there is none.
+    """Hostname of a kdev box running on `target`, STOPPING if it is on its
+    way out, or "" if there is none.
 
     The session status alone is not enough: a Quick Save reads as running for a
     few seconds, and so does a session started in the Kaggle editor. A kdev box
@@ -85,6 +154,8 @@ def find_live_box(cfg: config.Config, creds: api.Creds, target: str) -> str:
     """
     if cfg.tunnel_hostname and reachable(cfg.ssh_host_alias):
         return cfg.tunnel_hostname
+    if stopping(creds, target):
+        return STOPPING
     return await_ready(creds, target, timeout=900) or ""
 
 

@@ -63,7 +63,14 @@ def up(
         if not replace:
             with ui.spinner("a session is running; checking it is your box…"):
                 live = session.find_live_box(cfg, prof.creds, target)
-        if live:
+        if live == session.STOPPING:
+            # `kdev down` a moment ago: wait for its save, then start afresh.
+            # Connecting would find no tunnel; planning now would miss the save.
+            with ui.spinner("your last box is still saving your files…"):
+                session.wait_saved(prof.creds, target, running_too=True)
+            ui.ok("the last box finished saving")
+            must_stop = False
+        elif live:
             choice = _running_choice(target, interactive)
             if choice == "cancel":
                 return
@@ -97,6 +104,7 @@ def up(
     # hold, or a deliberately empty session would look complete and every
     # later `kdev up` would build on it alone, dropping the history.
     with ui.spinner("finding where you left off…"):
+        session.wait_saved(prof.creds, target)
         try:
             meta = api.get_kernel(prof.creds, target)
         except api.KaggleError:
@@ -259,7 +267,9 @@ def _cloudflared(interactive: bool):
     return cf
 
 
-def _stop_and_wait(cfg: config.Config, creds: api.Creds, target: str, timeout: int = 600) -> None:
+def _stop_and_wait(
+    cfg: config.Config, creds: api.Creds, target: str, timeout: int = session.SAVE_TIMEOUT
+) -> None:
     with ui.spinner("stopping the running box and waiting for it to save…"):
         stopped = False
         if session.reachable(cfg.ssh_host_alias):
@@ -370,6 +380,7 @@ def down(
 ) -> None:
     """Stop the box. Your files are saved however it stops."""
     cfg = config.load()
+    session.ssh_ready(cfg)
 
     if session_id:
         if account:
@@ -382,7 +393,7 @@ def down(
                 f"None of the signed-in accounts may cancel {session_id}.",
                 "Kaggle only lets the account that started it do that.",
             )
-        sshcfg.clear()
+        session.box_gone(cfg)
         ui.ok(f"cancelled session {session_id} as {by}; Kaggle saves its files as it stops")
         return
 
@@ -407,7 +418,7 @@ def down(
     except (subprocess.SubprocessError, OSError):
         reached = False
     if reached:
-        sshcfg.clear()
+        session.box_gone(cfg)
         ui.ok(
             "stopping; the box saves /kaggle/working as it exits",
             "Next `kdev up` brings it all back, on any account or machine.",
@@ -420,8 +431,15 @@ def down(
     creds = cfg.profile(account).creds
     status = api.session_status(creds, target).get("status", "?")
     if status not in api.LIVE_STATES:
-        sshcfg.clear()
+        session.box_gone(cfg)
         ui.ok(f"nothing running ({status.lower()}); your files are in the saved version")
+        return
+    if session.stopping(creds, target):
+        session.box_gone(cfg)
+        ui.ok(
+            "already stopping; Kaggle is saving /kaggle/working",
+            "Next `kdev up` waits for the save, then brings it all back.",
+        )
         return
     with ui.spinner("the box does not answer; finding its session id…"):
         sid, runner = session.live_session_id(creds, target)
@@ -437,7 +455,7 @@ def down(
             f"{sid}, and it is not signed in here.",
             f"Sign it in (kdev account add) or stop it at {nb.notebook_url(target)}",
         )
-    sshcfg.clear()
+    session.box_gone(cfg)
     ui.ok(f"cancelled session {sid} as {by}; Kaggle saves its files as it stops")
 
 
@@ -449,12 +467,9 @@ def ssh(ctx: typer.Context) -> None:
     cfg = config.load()
     if not cfg.ssh_host_alias:
         raise KdevError("No ssh alias configured.", "Run: kdev setup")
+    session.ssh_ready(cfg)
     if not sshcfg.has_block():
-        if not cfg.tunnel_hostname:
-            raise KdevError("No box hostname known yet.", "Start or find it with: kdev up")
-        # A laptop reaching a box another one started: a named tunnel's
-        # hostname never changes, so the block can be written without asking.
-        sshcfg.write(cfg.ssh_host_alias, cfg.tunnel_hostname, cloudflared_path=cloudflared.find())
+        raise KdevError("No box hostname known yet.", "Start or find it with: kdev up")
     # ssh's own exit code is this command's, so scripts can wrap it.
     raise typer.Exit(subprocess.run(["ssh", cfg.ssh_host_alias, *ctx.args]).returncode)
 
@@ -468,6 +483,7 @@ def status(
 ) -> None:
     """The box: running or not, who started it, when it ends, your files."""
     cfg = config.load()
+    session.ssh_ready(cfg)
     target = need_notebook(cfg)
     creds = cfg.profile(account).creds
     with ui.spinner("checking…"):
@@ -477,11 +493,13 @@ def status(
             state = {"status": "UNKNOWN", "failureMessage": str(e)}
         reachable = session.reachable(cfg.ssh_host_alias)
         box = persistence.box_state(cfg.ssh_host_alias) if reachable else {}
-    running = state.get("status") in api.LIVE_STATES
+        running = state.get("status") in api.LIVE_STATES
+        saving = running and not reachable and session.stopping(creds, target)
     info = {
         "notebook": target,
         "status": state.get("status", "?"),
         "running": running,
+        "stopping": saving,
         "reachable": reachable,
         "host": cfg.tunnel_hostname or None,
         "started_by": box.get("run_by") or None,
@@ -497,6 +515,8 @@ def status(
 
     # Kaggle's words describe the last *run*; the user asked about the *box*.
     word = {"RUNNING": "running", "QUEUED": "starting"}.get(info["status"], "stopped")
+    if saving:
+        word = "stopping"
     title = Text.assemble(
         (
             ui.g("live") + " " if running else ui.g("pending") + " ",
@@ -525,7 +545,9 @@ def status(
         left = max(0, int(box["ends"]) - int(time.time()))
         ends = time.strftime("%H:%M", time.localtime(int(box["ends"])))
         rows.append(("ends", f"{ends}  ({ui.fmt_hours(left)} left)"))
-    if running:
+    if saving:
+        rows.append(("files", "being saved; `kdev up` waits for them"))
+    elif running:
         reach = Text(
             f"{cfg.ssh_host_alias} {ui.g('arrow')} {cfg.tunnel_hostname or 'quick tunnel'}  "
         )
@@ -551,7 +573,7 @@ def status(
     if info["failure"]:
         rows.append(("error", Text(info["failure"], style="kdev.err")))
     ui.card(title, rows, tone="ok" if running else "muted")
-    if running and not reachable:
+    if running and not reachable and not saving:
         ui.hint("Running but not reachable yet: give it a minute, or `kdev logs` to see why.")
 
 
@@ -582,7 +604,9 @@ def logs(
 
 def restore_cmd(
     account: str = typer.Option("", "--account", "-a", help="Read the notebook as this account."),
-    from_version: str = typer.Option("", "--from", help="Restore this saved version, e.g. v12."),
+    from_version: str = typer.Option(
+        "", "--from", help="Bring back files from this saved version, e.g. v12."
+    ),
     from_backup: bool = typer.Option(
         False, "--from-backup", help="Push this machine's backup instead."
     ),
@@ -590,10 +614,12 @@ def restore_cmd(
     """Put your saved files back into the running box.
 
     `kdev up` already does this. Run it to finish a restore that was cut
-    short, roll back to an older version, or push a local backup. It never
-    overwrites a file written in the current session.
+    short, bring back files that an older version still has, or push a local
+    backup. It only adds what is missing: a file on the box now is never
+    overwritten, so this is not a rollback.
     """
     cfg = config.load()
+    session.ssh_ready(cfg)
     alias = cfg.ssh_host_alias
     if from_backup:
         files = persistence.contents()
@@ -620,6 +646,11 @@ def restore_cmd(
     target = state.get("notebook") or need_notebook(cfg)
     if target != cfg.notebook:
         ui.warn(f"the running box belongs to {target}; restoring from that notebook")
+    if from_version and not persistence.version_files(creds, target, from_version):
+        raise KdevError(
+            f"{from_version} of {target} has no saved files.",
+            "A running box's own version has none yet. See one: kdev workspace files --version vN",
+        )
     layers = [from_version] if from_version else list(state.get("layers") or [])
     if not layers:
         with ui.spinner("finding where you left off…"):
@@ -655,6 +686,7 @@ def backup() -> None:
     open in Finder, and push back with `kdev restore --from-backup`.
     """
     cfg = config.load()
+    session.ssh_ready(cfg)
     with ui.spinner("copying the box to this machine…"):
         ok, err = persistence.pull(cfg.ssh_host_alias)
     if not ok:

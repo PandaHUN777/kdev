@@ -26,9 +26,9 @@ def test_mirror_excludes_kdev_and_kaggle_noise():
         ".kdev-session",
         "__notebook__.ipynb",
         ".kdev-stop",
-        "__pycache__",
     ):
-        assert noise in w.EXCLUDES
+        assert "/" + noise in w.EXCLUDES
+    assert "__pycache__" in w.EXCLUDES
 
 
 def test_push_is_a_noop_when_nothing_has_been_saved(tmp_path, monkeypatch):
@@ -166,3 +166,93 @@ def test_background_ssh_never_asks_for_a_tty(monkeypatch):
     session.reachable("kaggle")
     assert len(calls) == 3
     assert all(argv[:2] == ["ssh", "-T"] for argv in calls), calls
+
+
+def test_up_waits_for_a_cancelled_session_to_finish_saving(monkeypatch):
+    """Measured live: after a cancel the version listed 0, then 29, then 54
+    files while CANCEL_REQUESTED. Planning in that window drops the session."""
+    from kdev import session
+
+    seen = iter(["CANCEL_REQUESTED", "CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED"])
+    calls = []
+
+    def status(creds, slug):
+        calls.append(1)
+        return {"status": next(seen)}
+
+    monkeypatch.setattr(api, "session_status", status)
+    monkeypatch.setattr(session.time, "sleep", lambda s: None)
+    session.wait_saved(api.Creds("u"), "a/b")
+    assert len(calls) == 3
+
+
+@pytest.mark.skipif(not __import__("shutil").which("rsync"), reason="needs rsync")
+def test_backup_mirrors_the_box_and_pushing_it_back_never_overwrites(monkeypatch, tmp_path):
+    """The backup kept files deleted on the box (and a whole other notebook's),
+    and `restore --from-backup` then overwrote what the session had written."""
+    from kdev import persistence as w
+
+    box, mirror = tmp_path / "box", tmp_path / "mirror"
+    box.mkdir()
+    mirror.mkdir()
+    (mirror / "stale.txt").write_text("from an old notebook")
+    (box / "work.txt").write_text("v1")
+    monkeypatch.setattr(w, "REMOTE", str(box))
+    monkeypatch.setattr(w, "mirror_dir", lambda: mirror)
+    monkeypatch.setattr(w, "wait_reachable", lambda alias, timeout=180: True)
+    # rsync treats "alias:path" as remote; an empty alias leaves a local path.
+    monkeypatch.setattr(w, "_rsync", lambda src, dst, *x, **k: _local(src, dst, *x))
+
+    assert w.pull("")[0]
+    assert sorted(p.name for p in mirror.iterdir()) == ["work.txt"]
+
+    (box / "work.txt").write_text("v2, written this session")
+    (box / "gone.txt").unlink(missing_ok=True)
+    (mirror / "only-in-backup.txt").write_text("b")
+    assert w.push("")[0]
+    assert (box / "work.txt").read_text() == "v2, written this session"
+    assert (box / "only-in-backup.txt").exists()
+
+
+def _local(src, dst, *extra):
+    import subprocess
+
+    from kdev import persistence as w
+
+    cmd = ["rsync", "-a", *extra] + [f"--exclude={p}" for p in w.EXCLUDES]
+    return subprocess.run([*cmd, src.lstrip(":"), dst.lstrip(":")], capture_output=True, text=True)
+
+
+def test_stacked_layers_only_fill_in_what_the_newest_never_got(monkeypatch):
+    """Measured live: a file deleted in a session came back because the layer
+    under it was restored whole. The layer under only supplies what the newest
+    session's restore missed or never reached."""
+    base = {
+        "kept.py": "b/kept",
+        "deleted.py": "b/deleted",
+        "failed.bin": "b/failed",
+        "never.py": "b/never",
+        ".kdev/meta.json": "b/meta",
+    }
+    missed = {"kept.py": "t/kept", ".kdev/state.json": "t/state"}
+    w = _versions(
+        monkeypatch,
+        {
+            "v1": (base, {"restored": True}),
+            "v2": (missed, {"restored": True, "layers": ["v1"], "missing": ["failed.bin"]}),
+        },
+    )
+    plan = w.build_plan(api.Creds("u"), "a/b", ["v1", "v2"])
+    assert sorted(plan["layers"][0]["files"]) == [".kdev/meta.json", "failed.bin"]
+
+    killed = {"kept.py": "t/kept", ".kdev/state.json": "t/state", ".kdev/fetched": "t/f"}
+    w = _versions(
+        monkeypatch,
+        {
+            "v1": (base, {"restored": True}),
+            "v2": (killed, {"restored": False, "layers": ["v1"]}),
+        },
+    )
+    monkeypatch.setattr(w, "_fetched", lambda files: {"kept.py", "deleted.py"})
+    plan = w.build_plan(api.Creds("u"), "a/b", ["v1", "v2"])
+    assert sorted(plan["layers"][0]["files"]) == [".kdev/meta.json", "failed.bin", "never.py"]

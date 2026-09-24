@@ -233,6 +233,7 @@ stateDiagram-v2
 | how the last session ended | what the next `kdev up` gives you |
 |---|---|
 | `kdev down` | everything |
+| `kdev down`, then `kdev up` straight away | everything: `up` waits for the save first (about 2 min per GB) |
 | **Stop session** in the Kaggle UI | everything (a cancel still saves) |
 | the session's time ran out | everything (the box stops itself 2 min early) |
 | the tunnel process died | everything |
@@ -255,22 +256,25 @@ flowchart TD
     empty -- no --> back["try v(N-1)"] --> empty
     empty -- yes --> state{"its .kdev/state.json says"}
     state -- "restored: true<br/>(or kdev never touched it)" --> one["restore vN alone"]
-    state -- "restored: false<br/>(cut short, or worked in<br/>before the restore)" --> stack["restore its base layers,<br/>then vN on top"]
+    state -- "restored: false, or files missing<br/>(cut short, or worked in<br/>before the restore)" --> stack["what vN never got from<br/>its base layers, then vN on top"]
 ```
 
 A version with no files is a source-only save (group setup, a Quick Save), so
 kdev walks past it. A session that was stopped before its restore finished —
 or that you worked in before restoring — is not skipped: it gets stacked on
-the versions it was meant to be built on, so nothing done in it is lost.
+the versions it was meant to be built on, so nothing done in it is lost. The
+layers underneath fill in only what that session's restore never delivered
+(the box logs each file as it lands, in `.kdev/fetched`), so a file you deleted
+there stays deleted.
 
 A restore never overwrites a file written in the current session, so it is
 safe to run again at any time:
 
 ```bash
 kdev restore               # finish or repeat the restore on the running box
-kdev restore --from v12    # roll back to an older version
-kdev workspace files       # what the latest version holds (--version v12 for another)
-kdev backup                # optional: copy the box to this machine
+kdev restore --from v12    # add files v12 has that the box doesn't (not a rollback)
+kdev workspace files       # what `kdev up` would restore (--version v12 for another)
+kdev backup                # optional: an exact copy of the box on this machine
 ```
 
 ### Your own cells in the notebook
@@ -399,6 +403,7 @@ kdev logs          # what the box itself is saying
 | `The session never reported a tunnel` | `kdev logs`; the message names the command to stop it |
 | `Only X can cancel session …` | sign X in (`kdev account add`) or stop it in the Kaggle UI |
 | `Not all your files are back yet` | `kdev restore` finishes it |
+| `your last box is still saving your files` | nothing: `kdev up` waits, then starts |
 | `… has a session kdev cannot reach` | someone is using the notebook in the Kaggle editor |
 
 ---
@@ -412,6 +417,18 @@ kdev logs          # what the box itself is saying
   tunnel credentials (and a git deploy key, if you set one) sit in the private
   notebook's source. Anyone with Can Edit can read them. Scope a deploy key to
   one repository.
+- **Host keys.** Every session is a new container with a new host key, so the
+  `kaggle` block in `~/.ssh/config` doesn't pin one; a pinned key would break
+  VS Code on every other machine. Only a box holding the workspace's tunnel
+  credentials can answer on that hostname, and anyone holding those can
+  already edit the notebook that builds the box.
+- **One box at a time.** kdev is built for one person on one machine at a
+  time; switching machines is fine. Two machines running `kdev up` at the same
+  moment start two boxes behind one hostname, and only the one that stops last
+  carries forward. Start from one machine, then connect from the other.
+- **Metadata in the last 30 s.** After a hard kill, symlinks, empty folders and
+  executable bits created in the final 30 seconds are gone. File contents never
+  are.
 - **Nothing sensitive in crash reports.** kdev never prints tracebacks with
   local variables; `-v` shows a traceback when you ask for one.
 - **Kaggle's limits:** 12h per CPU/GPU session and 9h on TPU; weekly GPU/TPU
@@ -427,7 +444,7 @@ kdev logs          # what the box itself is saying
 ```bash
 uv sync
 uv run pre-commit install        # hooks on commit, tests on push
-uv run pytest                    # 180 tests, no network needed
+uv run pytest                    # 199 tests, no network needed
 uv run kdev -v …                 # the working tree, with API logging
 ```
 

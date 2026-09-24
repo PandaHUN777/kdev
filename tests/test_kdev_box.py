@@ -255,3 +255,91 @@ def test_a_reused_pid_is_not_mistaken_for_a_running_restore(env, tmp_path, monke
     assert box._restore_running() is False
     (proc / "cmdline").write_bytes(b"python3\x00/root/.kdev/kdev_box.py\x00plan.json\x00")
     assert box._restore_running() is True
+
+
+def test_only_the_boxs_own_runtime_files_are_skipped(env):
+    """Measured live: a project's web/static/custom.css never came back, and
+    was not even reported missing, because the skip matched any custom.css."""
+    names = ["custom.css", "cloudflared.log", "web/static/custom.css", "logs/cloudflared.log"]
+    fetch, fb = _store({f"v1/{n}": n.encode() for n in names})
+    box.restore({"layers": [_layer("v1", names)]}, fetch, fb)
+    assert not (env / "custom.css").exists() and not (env / "cloudflared.log").exists()
+    assert (env / "web/static/custom.css").read_bytes() == b"web/static/custom.css"
+    assert (env / "logs/cloudflared.log").exists()
+
+
+def test_signed_urls_with_raw_names_are_escaped():
+    """Kaggle signs `spaced name ü.txt` into the URL unescaped; urllib refuses
+    that, so the file could never be restored."""
+    raw = "https://www.kaggleusercontent.com/kf/1/tok/data/spaced name ü.txt?X-Sig=a%2Fb"
+    assert box._url(raw) == (
+        "https://www.kaggleusercontent.com/kf/1/tok/data/spaced%20name%20%C3%BC.txt?X-Sig=a%2Fb"
+    )
+    assert box._url(box._url(raw)) == box._url(raw)
+
+
+def test_a_killed_restores_leftover_part_file_never_lands_on_the_real_one(env):
+    """Measured live: a restore killed mid-download saved big.bin.kdev-part;
+    the next restore fetched it as a user file onto big.bin's own temp path,
+    and big.bin came back as the 60 MB partial instead of 1 GB."""
+    fetch, fb = _store({"v1/big.bin": b"whole", "v2/big.bin.kdev-part": b"partial"})
+    state = box.restore(
+        {"layers": [_layer("v1", ["big.bin"]), _layer("v2", ["big.bin.kdev-part"])]}, fetch, fb
+    )
+    assert (env / "big.bin").read_bytes() == b"whole"
+    assert not (env / "big.bin.kdev-part").exists() and state["total"] == 1
+
+
+def test_exec_bits_are_recorded_before_any_file_arrives(env):
+    """A restore killed part-way must still save the bits Kaggle drops, or the
+    next restore builds on its copies of .git/hooks without them."""
+    meta = json.dumps({"exec": ["hook"], "symlinks": {"ln": "hook"}, "dirs": ["empty"]}).encode()
+    seen = []
+
+    def fetch(url, dest):
+        seen.append(json.loads((env / box.META).read_text()))
+        dest.write_bytes(b"#!/bin/sh\n")
+
+    box.restore({"layers": [_layer("v1", ["hook", box.META])]}, fetch, lambda url: meta)
+    assert seen[0]["exec"] == ["hook"] and seen[0]["symlinks"] == {"ln": "hook"}
+    assert os.access(env / "hook", os.X_OK)
+
+
+def test_a_download_cut_short_is_not_kept_as_whole(tmp_path):
+    """http.client ends a body cut off mid-stream quietly; without the length
+    check a truncated file would be renamed into place."""
+    import socket
+    import threading
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly ten b")
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    dest = tmp_path / "f.bin"
+    with pytest.raises(OSError, match="short"):
+        box._fetch(f"http://127.0.0.1:{srv.getsockname()[1]}/f", dest)
+    assert not dest.exists() and not list(tmp_path.iterdir())
+
+
+def test_a_restore_logs_each_file_as_it_lands(env):
+    """What the next plan uses to tell a file deleted since from one never restored."""
+    fetch, fb = _store({"v1/a.py": b"a", "v1/b c ü.txt": b"b"})
+    box.restore({"layers": [_layer("v1", ["a.py", "b c ü.txt"])]}, fetch, fb)
+    lines = (env / box.FETCHED).read_text().splitlines()
+    assert sorted(json.loads(x) for x in lines) == ["a.py", "b c ü.txt"]
+
+
+def test_filling_in_from_another_version_keeps_the_base(env):
+    """`kdev restore --from v17` on a box built from v18 recorded v17 as its
+    base, so the next plain `kdev restore` filled in from the wrong version."""
+    fetch, fb = _store({"v18/a.py": b"a", "v17/old.py": b"o"})
+    box.restore({"layers": [_layer("v18", ["a.py"])]}, fetch, fb)
+    state = box.restore({"layers": [_layer("v17", ["old.py"])]}, fetch, fb)
+    assert state["layers"] == ["v18"] and (env / "old.py").exists()

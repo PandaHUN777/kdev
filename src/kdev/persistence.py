@@ -32,14 +32,16 @@ REMOTE = "/kaggle/working"
 
 #: Kept out of the local backup. `.kdev` is the live session's own state:
 #: pushing an old copy back up would tell the box it is restored when it is not.
+#: A leading / anchors a name to the top, where the box writes it; a project's
+#: own web/static/custom.css is still backed up.
 EXCLUDES = [
-    "cloudflared.log",
-    ".kdev-session",
-    ".kdev-stop",
-    ".kdev",
-    "__notebook__.ipynb",
-    "__output__.json",
-    "custom.css",
+    "/cloudflared.log",
+    "/.kdev-session",
+    "/.kdev-stop",
+    "/.kdev",
+    "/__notebook__.ipynb",
+    "/__output__.json",
+    "/custom.css",
     ".virtual_documents",
     ".ipynb_checkpoints",
     "__pycache__",
@@ -58,6 +60,7 @@ def mirror_dir() -> Path:
 
 
 STATE = ".kdev/state.json"
+FETCHED = ".kdev/fetched"
 
 #: How far back to look for a version to build on. A handful of cut-short
 #: sessions in a row is already unusual; ten means something else is wrong.
@@ -101,26 +104,69 @@ def plan_layers(creds: api.Creds, notebook: str, latest: int) -> list[str]:
         ran the restore before working in it) still holds whatever was done in
         it -- stack it on the layers it was meant to be built on.
     """
+    label, files = newest_saved(creds, notebook, latest)
+    if not label:
+        return []
+    state = _state(files)
+    if state and (state.get("restored") is False or state.get("missing")):
+        base = [str(x) for x in state.get("layers") or []]
+        return [*base, label][-MAX_LAYERS:]
+    return [label]
+
+
+def newest_saved(creds: api.Creds, notebook: str, latest: int) -> tuple[str, dict[str, str]]:
+    """The newest version, from `latest` back, that holds any files.
+
+    A running session's own version has none until it ends, and neither has a
+    Quick Save of the source: neither is where your files are.
+    """
     for number in range(latest, max(0, latest - WALK_BACK), -1):
-        label = f"v{number}"
-        files = version_files(creds, notebook, label)
-        if not files:
-            continue
-        state = _state(files)
-        if state and (state.get("restored") is False or state.get("missing")):
-            base = [str(x) for x in state.get("layers") or []]
-            return [*base, label][-MAX_LAYERS:]
-        return [label]
-    return []
+        files = version_files(creds, notebook, f"v{number}")
+        if files:
+            return f"v{number}", files
+    return "", {}
+
+
+def _fetched(files: dict[str, str]) -> set[str]:
+    """The names a version's restore delivered (its .kdev/fetched)."""
+    url = files.get(FETCHED)
+    if not url:
+        return set()
+    try:
+        r = httpx.get(url, follow_redirects=True, timeout=60)
+        lines = r.text.splitlines() if r.status_code == 200 else []
+        return {json.loads(line) for line in lines if line.strip()}
+    except (httpx.HTTPError, ValueError):
+        return set()
+
+
+def _still_needed(top: dict[str, str]):
+    """Which files of the layers under `top` it still needs, or None for all.
+
+    A layer is stacked under the newest only because the newest never got all
+    of it. Taking the rest too would bring back whatever was deleted since.
+    """
+    state = _state(top) or {}
+    if state.get("restored") and state.get("missing"):
+        return set(state["missing"]).__contains__
+    if state.get("restored") is False:
+        got = _fetched(top)
+        if got:
+            return lambda name: name not in got
+    return None
 
 
 def build_plan(creds: api.Creds, notebook: str, labels: list[str]) -> dict:
     """Fresh signed URLs for each layer, resolved just before they are used."""
+    listed = [(label, version_files(creds, notebook, label)) for label in labels]
+    listed = [(label, files) for label, files in listed if files]
+    needed = _still_needed(listed[-1][1]) if len(listed) > 1 else None
     layers = []
-    for label in labels:
-        files = version_files(creds, notebook, label)
-        if files:
-            layers.append({"label": label, "files": files})
+    for i, (label, files) in enumerate(listed):
+        if needed and i < len(listed) - 1:
+            # .kdev/ carries the metadata and keys every layer contributes.
+            files = {n: u for n, u in files.items() if n.startswith(".kdev/") or needed(n)}
+        layers.append({"label": label, "files": files})
     return {"layers": layers}
 
 
@@ -204,8 +250,8 @@ def follow(alias: str, progress=None) -> tuple[bool, dict]:
     return bool(last.get("restored")), last
 
 
-def _rsync(src: str, dst: str, excludes: bool = True) -> subprocess.CompletedProcess:
-    cmd = ["rsync", "-az", "--partial", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=20"]
+def _rsync(src: str, dst: str, *extra: str, excludes: bool = True) -> subprocess.CompletedProcess:
+    cmd = ["rsync", "-az", "--partial", *extra, "-e", "ssh -o BatchMode=yes -o ConnectTimeout=20"]
     if excludes:
         for pattern in EXCLUDES:
             cmd += ["--exclude", pattern]
@@ -242,7 +288,8 @@ def push(alias: str, attempts: int = 3) -> tuple[bool, str]:
         return False, "ssh never became reachable"
     err = ""
     for attempt in range(attempts):
-        r = _rsync(f"{local}/", f"{alias}:{REMOTE}/")
+        # Pushing a backup fills in; it never replaces what this session wrote.
+        r = _rsync(f"{local}/", f"{alias}:{REMOTE}/", "--ignore-existing")
         if r.returncode == 0:
             return True, ""
         err = (r.stderr or "").strip()[-200:]
@@ -254,7 +301,9 @@ def pull(alias: str) -> tuple[bool, str]:
     """Bring the session's working directory down into the mirror."""
     local = mirror_dir()
     local.mkdir(parents=True, exist_ok=True)
-    r = _rsync(f"{alias}:{REMOTE}/", f"{local}/")
+    # An exact copy of the box: without --delete, files removed on the box --
+    # or left from another notebook -- linger here and get pushed back up.
+    r = _rsync(f"{alias}:{REMOTE}/", f"{local}/", "--delete")
     return r.returncode == 0, (r.stderr or "").strip()[-200:]
 
 

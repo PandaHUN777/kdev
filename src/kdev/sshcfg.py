@@ -7,6 +7,7 @@ the final stanza in the file whenever ours was last.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -17,7 +18,6 @@ END = "# <<< kdev <<<"
 BLOCK_RE = re.compile(rf"\n?{re.escape(BEGIN)}.*?{re.escape(END)}\n?", re.DOTALL)
 
 SSH_CONFIG = Path.home() / ".ssh" / "config"
-KNOWN_HOSTS = Path.home() / ".ssh" / "known_hosts.kdev"
 
 
 def render_block(
@@ -30,8 +30,15 @@ def render_block(
         f"    HostName {hostname}\n"
         f"    User {user}\n"
         f"    ProxyCommand {proxy}\n"
-        f"    UserKnownHostsFile {KNOWN_HOSTS}\n"
-        f"    StrictHostKeyChecking accept-new\n"
+        # Every session is a new container with a new host key, so a key
+        # remembered by one machine is wrong on the next box another machine
+        # starts: VS Code and `ssh kaggle` there fail until someone resets it.
+        # Only a box holding the workspace's tunnel credentials can answer on
+        # this hostname, and whoever holds those can already edit the
+        # notebook that builds the box, so a pinned key protects nothing.
+        f"    UserKnownHostsFile {os.devnull}\n"
+        f"    StrictHostKeyChecking no\n"
+        f"    LogLevel ERROR\n"
         f"    ServerAliveInterval 30\n"
         f"    ServerAliveCountMax 10\n"
         # For `ssh kaggle htop`. kdev's own background ssh calls pass -T: a tty
@@ -52,11 +59,6 @@ def write(
     )
     SSH_CONFIG.write_text(body)
     SSH_CONFIG.chmod(0o600)
-    # Every session is a brand-new container with a brand-new host key, so a
-    # stale entry here is guaranteed, not hypothetical. Scope the reset to our
-    # own known_hosts file instead of disabling host checking globally.
-    KNOWN_HOSTS.write_text("")
-    KNOWN_HOSTS.chmod(0o600)
     return SSH_CONFIG
 
 

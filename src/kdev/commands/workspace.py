@@ -7,7 +7,7 @@ import re
 import typer
 from rich.text import Text
 
-from .. import api, config, ui
+from .. import api, config, kdev_box, persistence, ui
 from .. import notebook as nb
 from ..errors import KdevError
 from ._common import need_notebook
@@ -60,14 +60,7 @@ def main(
     ]
     if info["members"]:
         rows.append(("members", ", ".join(info["members"])))
-    rows.append(
-        (
-            "saved",
-            f"v{info['version']}" + (f", {files} file(s)" if files is not None else "")
-            if info["version"]
-            else "nothing yet",
-        )
-    )
+    rows.append(("saved", f"{info['saved']}, {files} file(s)" if info["saved"] else "nothing yet"))
     rows.append(("url", Text(nb.notebook_url(target), style="kdev.muted")))
     ui.card(Text("workspace", style="bold"), rows)
     for e in info["errors"]:
@@ -82,7 +75,7 @@ def main(
 @app.command("files")
 def files(
     version: str = typer.Option(
-        "", "--version", help="A saved version, e.g. v12 (default: latest)."
+        "", "--version", help="A saved version, e.g. v12 (default: the newest with files)."
     ),
     account: str = typer.Option("", "--account", "-a", help="Read as this account."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON instead."),
@@ -92,25 +85,34 @@ def files(
     target = need_notebook(cfg)
     if version and not re.fullmatch(r"v\d+", version):
         raise KdevError("--version takes a label like v12.")
+    creds = cfg.profile(account).creds
     with ui.spinner("reading the saved version…"):
         try:
-            listing = api.session_output(cfg.profile(account).creds, target, version)
+            if version:
+                listing = [f["name"] for f in api.session_output(creds, target, version)]
+            else:
+                # The newest version with files: a running box's own has none.
+                latest = int(api.get_kernel(creds, target).get("currentVersionNumber") or 0)
+                version, found = persistence.newest_saved(creds, target, latest)
+                listing = list(found)
         except api.KaggleError as e:
             raise KdevError(
-                f"Could not read {version or 'the latest version'} of {target}.", str(e)
+                f"Could not read {version or 'the saved files'} of {target}.", str(e)
             ) from e
+    # Exactly what a restore would bring back: not kdev's own state, not the
+    # box's runtime files, not a download a killed restore left half-done.
     names = sorted(
-        f["name"]
-        for f in listing
-        if not f["name"].startswith(".kdev/")
-        and f["name"]
-        not in ("cloudflared.log", "__notebook__.ipynb", "__output__.json", ".kdev-session")
+        name
+        for name in listing
+        if not name.startswith(".kdev/")
+        and name not in kdev_box.RUNTIME
+        and not name.endswith(kdev_box.PART)
     )
     if as_json:
-        ui.emit_json({"notebook": target, "version": version or "latest", "files": names})
+        ui.emit_json({"notebook": target, "version": version or None, "files": names})
         return
     ui.console.print(
-        Text.assemble((target, "bold"), ("  " + (version or "latest version"), "kdev.muted"))
+        Text.assemble((target, "bold"), ("  " + (version or "no saved version"), "kdev.muted"))
     )
     for name in names[:50]:
         ui.hint(name)

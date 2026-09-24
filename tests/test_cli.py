@@ -59,7 +59,7 @@ class FakeKaggle:
                 self.saved.append(kw) or {"versionNumber": self.version + 1, "kernelId": 42}
             ),
         )
-        mp(api, "stream_logs", lambda c, s, wait_seconds=300: iter(self.logs))
+        mp(api, "stream_logs", lambda c, s, wait_seconds=300, idle=None: iter(self.logs))
         mp(
             api,
             "get_policy",
@@ -98,7 +98,6 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "kdev")
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "kdev" / "config.json")
     monkeypatch.setattr(sshcfg, "SSH_CONFIG", tmp_path / "ssh" / "config")
-    monkeypatch.setattr(sshcfg, "KNOWN_HOSTS", tmp_path / "ssh" / "known_hosts.kdev")
     monkeypatch.setattr(auth, "signed_in", lambda name: True)
     monkeypatch.setattr(auth, "access_token", lambda name: f"token-of-{name}")
     monkeypatch.setattr(session, "reachable", lambda alias, timeout=10: False)
@@ -266,12 +265,23 @@ def test_workspace_describes_sharing_members_and_saves(home, kaggle, capsys):
 
 def test_workspace_files_hides_kdevs_own_files(home, kaggle, capsys):
     configured()
-    kaggle.outputs[""] = [
+    kaggle.outputs["v3"] = [
         {"name": n, "url": "u"}
-        for n in ("notes.md", ".kdev/state.json", "cloudflared.log", "src/app.py")
+        for n in ("notes.md", ".kdev/state.json", "cloudflared.log", "src/app.py", "x.kdev-part")
     ]
     code, out, _ = kdev(capsys, "workspace", "files", "--json")
     assert code == 0 and json.loads(out)["files"] == ["notes.md", "src/app.py"]
+
+
+def test_workspace_files_shows_the_saved_files_while_a_box_runs(home, kaggle, capsys):
+    """The running box's own version has no files until it ends; showing that
+    one said "nothing saved yet" about a workspace that was all there."""
+    configured()
+    kaggle.version = 4
+    kaggle.outputs["v3"] = [{"name": "notes.md", "url": "u"}]
+    code, out, _ = kdev(capsys, "workspace", "files", "--json")
+    got = json.loads(out)
+    assert code == 0 and (got["version"], got["files"]) == ("v3", ["notes.md"])
 
 
 def test_workspace_use_takes_the_tunnel_from_the_notebook(home, kaggle, capsys):
@@ -414,6 +424,45 @@ def test_down_says_who_can_stop_it_when_they_are_not_here(home, kaggle, capsys, 
     monkeypatch.setattr("subprocess.run", lambda *a, **k: type("R", (), {"returncode": 255})())
     code, _, err = kdev(capsys, "down")
     assert code == 1 and "Only carol can cancel" in err
+
+
+def test_down_twice_leaves_a_saving_box_alone(home, kaggle, capsys, monkeypatch):
+    """After `kdev down` Kaggle says RUNNING for as long as the save takes, with
+    the tunnel gone. A second `down` must see it is stopping, not cancel it."""
+    configured()
+    kaggle.status = "RUNNING"
+    kaggle.owner_of_session = "bob"
+    kaggle.logs = ["KDEV_SESSION id=99 by=bob", "KDEV_READY host=h", "KDEV_STOP requested"]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: type("R", (), {"returncode": 255})())
+    code, out, _ = kdev(capsys, "down")
+    assert code == 0 and not kaggle.cancelled and "already stopping" in out
+
+
+def test_status_calls_a_saving_box_stopping(home, kaggle, capsys, monkeypatch):
+    configured()
+    kaggle.status = "RUNNING"
+    kaggle.logs = ["KDEV_READY host=h", "KDEV_DONE"]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: type("R", (), {"returncode": 255})())
+    code, out, _ = kdev(capsys, "status", "--json")
+    assert code == 0 and json.loads(out)["stopping"] is True
+
+
+def test_down_keeps_the_ssh_block_for_the_next_box(home, kaggle, capsys, monkeypatch):
+    """Measured: `kdev down` removed the block, so after another machine started
+    the next box, status, backup, VS Code and `ssh kaggle` here could not reach
+    it. A named tunnel's hostname is where every box will be."""
+    configured()
+    sshcfg.write("kaggle", "box.example.com")
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: type("R", (), {"returncode": 0})())
+    assert kdev(capsys, "down")[0] == 0 and sshcfg.has_block()
+
+
+def test_status_writes_the_ssh_block_on_a_machine_without_one(home, kaggle, capsys, monkeypatch):
+    configured()
+    kaggle.status = "COMPLETE"
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: type("R", (), {"returncode": 255})())
+    assert not sshcfg.has_block()
+    assert kdev(capsys, "status")[0] == 0 and sshcfg.has_block()
 
 
 def test_logs_skip_heartbeats_and_stop_after_n(home, kaggle, capsys):

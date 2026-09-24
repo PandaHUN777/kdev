@@ -52,9 +52,14 @@ from pathlib import Path
 STATE = ".kdev/state.json"
 META = ".kdev/meta.json"
 KEYS = ".kdev/authorized_keys"
+#: Every name a restore has put in place, one JSON string per line. Saved with
+#: the version, so a restore that never finished still says what it delivered:
+#: anything else under it that is gone now was deleted, not missed.
+FETCHED = ".kdev/fetched"
 
-#: The box's own runtime files. Restoring them would overwrite the live
-#: session's copies with a dead session's.
+#: The box's own runtime files, at the top of the workspace. Restoring them
+#: would overwrite the live session's copies with a dead session's. Matched by
+#: full path: a project's own web/static/custom.css is the user's file.
 RUNTIME = {
     "cloudflared.log",
     ".kdev-stop",
@@ -63,6 +68,10 @@ RUNTIME = {
     "__output__.json",
     "custom.css",
 }
+
+#: A download in progress. Kaggle saves one a killed restore left behind, and
+#: restoring it would land on the temp path of the real file's own download.
+PART = ".kdev-part"
 
 WORKERS = 16
 ATTEMPTS = 3
@@ -248,12 +257,23 @@ def record_meta() -> bool:
 # --- restore ------------------------------------------------------------------
 
 
+def _url(url: str) -> str:
+    """Kaggle signs URLs with the file name raw -- spaces, accents and all --
+    and urllib refuses those outright, so such a file could never come back.
+    Escaping leaves what is already escaped alone."""
+    return urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
+
+
 def _fetch(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".kdev-part")
+    tmp = dest.with_name(dest.name + PART)
     try:
-        with urllib.request.urlopen(url, timeout=300) as r, tmp.open("wb") as out:
+        with urllib.request.urlopen(_url(url), timeout=300) as r, tmp.open("wb") as out:
             shutil.copyfileobj(r, out, 1 << 20)
+            # http.client ends a body cut off mid-stream as if it were done;
+            # a short file must not be renamed into place as a whole one.
+            if r.length:
+                raise OSError(f"connection closed {r.length} bytes short")
         # Rename last: a half-written file must never look like a whole one.
         tmp.replace(dest)
     finally:
@@ -261,7 +281,7 @@ def _fetch(url: str, dest: Path) -> None:
 
 
 def _fetch_bytes(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=120) as r:
+    with urllib.request.urlopen(_url(url), timeout=120) as r:
         return r.read()
 
 
@@ -351,7 +371,11 @@ def restore(plan: dict, fetch=_fetch, fetch_bytes=_fetch_bytes) -> dict:
     preexisting = _existing(work)
 
     state = _read_json(work / STATE)
-    state.update({"restored": False, "layers": labels, "done": 0, "missing": []})
+    # A box already built keeps the base it was built on: filling in from
+    # another version (`kdev restore --from`) must not make the next plain
+    # `kdev restore` finish from that one instead.
+    base = state["layers"] if state.get("restored") and state.get("layers") else labels
+    state.update({"restored": False, "layers": base, "done": 0, "missing": []})
 
     # Later layers win, so each name is fetched once, from its newest copy.
     wanted: dict[str, tuple[int, str]] = {}
@@ -364,35 +388,11 @@ def restore(plan: dict, fetch=_fetch, fetch_bytes=_fetch_bytes) -> dict:
             if name in specials:
                 specials[name].append(url)
                 continue
-            if _is_kdev_path(rel) or rel.name in RUNTIME or name in preexisting:
+            if _is_kdev_path(rel) or name in RUNTIME or name.endswith(PART) or name in preexisting:
                 continue
             wanted[name] = (i, url)
     state["total"] = len(wanted)
     _write_json(work / STATE, state)
-
-    lock = threading.Lock()
-    last_write = [0.0]
-
-    def one(item: tuple[str, tuple[int, str]]) -> None:
-        name, (_i, url) = item
-        for attempt in range(ATTEMPTS):
-            try:
-                fetch(url, work / name)
-                break
-            except Exception:  # per-file boundary: any failure means "missing", recorded below
-                if attempt == ATTEMPTS - 1:
-                    with lock:
-                        state["missing"].append(name)
-                    return
-                time.sleep(2**attempt)
-        with lock:
-            state["done"] += 1
-            if time.time() - last_write[0] > 0.5:
-                last_write[0] = time.time()
-                _write_json(work / STATE, state)
-
-    with ThreadPoolExecutor(WORKERS) as pool:
-        list(pool.map(one, wanted.items()))
 
     owner = {name: i for name, (i, _url) in wanted.items()}
     metas = []
@@ -402,6 +402,50 @@ def restore(plan: dict, fetch=_fetch, fetch_bytes=_fetch_bytes) -> dict:
         except (OSError, urllib.error.URLError, ValueError):
             metas.append({})
     merged = _merge_meta(metas, owner)
+    # Recorded before any file arrives: Kaggle drops exec bits and links, and
+    # a restore killed part-way must still save them for the files it did
+    # bring back, or the next restore builds on copies that lost them.
+    early = scan_meta(work)
+    early["symlinks"] = {
+        **{p: t for p, t in merged["symlinks"].items() if p not in preexisting},
+        **early["symlinks"],
+    }
+    early["dirs"] = sorted({*merged["dirs"], *early["dirs"]})
+    early["exec"] = sorted({*merged["exec"], *early["exec"]})
+    _write_json(work / META, early)
+    executable = set(merged["exec"])
+
+    lock = threading.Lock()
+    last_write = [0.0]
+    delivered = (work / FETCHED).open("a")
+
+    def one(item: tuple[str, tuple[int, str]]) -> None:
+        name, (_i, url) = item
+        for attempt in range(ATTEMPTS):
+            try:
+                fetch(url, work / name)
+                # Now, not at the end: a later scan of a half-restored tree
+                # must see the bit, or it records the file as not executable.
+                if name in executable:
+                    (work / name).chmod((work / name).stat().st_mode | 0o111)
+                break
+            except Exception:  # per-file boundary: any failure means "missing", recorded below
+                if attempt == ATTEMPTS - 1:
+                    with lock:
+                        state["missing"].append(name)
+                    return
+                time.sleep(2**attempt)
+        with lock:
+            state["done"] += 1
+            delivered.write(json.dumps(name) + "\n")
+            delivered.flush()
+            if time.time() - last_write[0] > 0.5:
+                last_write[0] = time.time()
+                _write_json(work / STATE, state)
+
+    with delivered, ThreadPoolExecutor(WORKERS) as pool:
+        list(pool.map(one, wanted.items()))
+
     unapplied = apply_meta(merged, preexisting, work)
     # Written by the restore rather than left to the timer, so a kill in the
     # next few seconds still commits the full set -- and scanned from disk, not

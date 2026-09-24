@@ -5,7 +5,6 @@ def test_ssh_block_replaces_itself_and_preserves_neighbours(tmp_path, monkeypatc
     cfgfile = tmp_path / "config"
     cfgfile.write_text("Host github.com\n    User git\n\nHost other\n    User me\n")
     monkeypatch.setattr(sshcfg, "SSH_CONFIG", cfgfile)
-    monkeypatch.setattr(sshcfg, "KNOWN_HOSTS", tmp_path / "known_hosts.kdev")
 
     sshcfg.write("kaggle", "a.example.com")
     sshcfg.write("kaggle", "b.example.com")
@@ -25,7 +24,6 @@ def test_ssh_block_embeds_the_absolute_binary_path(tmp_path, monkeypatch):
     """ssh resolves a bare ProxyCommand from PATH, where the managed copy is not."""
     cfgfile = tmp_path / "config"
     monkeypatch.setattr(sshcfg, "SSH_CONFIG", cfgfile)
-    monkeypatch.setattr(sshcfg, "KNOWN_HOSTS", tmp_path / "kh")
 
     managed = tmp_path / "kdev bin" / "cloudflared"
     sshcfg.write("kaggle", "host.example.com", cloudflared_path=managed)
@@ -39,7 +37,6 @@ def test_ssh_block_presence_is_detectable(tmp_path, monkeypatch):
 
     cfg = tmp_path / "config"
     monkeypatch.setattr(sshcfg, "SSH_CONFIG", cfg)
-    monkeypatch.setattr(sshcfg, "KNOWN_HOSTS", tmp_path / "known_hosts")
     assert not sshcfg.has_block()
     sshcfg.write("kaggle", "box.example.com")
     assert sshcfg.has_block()

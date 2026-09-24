@@ -221,6 +221,10 @@ def session_status(creds: Creds, slug: str) -> dict:
 
 #: Session states that mean the box is, or is about to be, alive.
 LIVE_STATES = frozenset({"RUNNING", "QUEUED"})
+#: Stopped, but its files are still being saved. Measured after a cancel: the
+#: version listed 0, then 29, then all 54 files while in this state, and was
+#: complete only once it moved on. (A crash stays RUNNING until it is saved.)
+SAVING = "CANCEL_REQUESTED"
 
 
 def cancel_session(creds: Creds, kernel_session_id: int) -> dict:
@@ -231,12 +235,15 @@ def quota(creds: Creds) -> dict:
     return call(creds, "GetAcceleratorQuotaStatistics", {})
 
 
-def stream_logs(creds: Creds, slug: str, wait_seconds: int = 300) -> Iterator[str]:
+def stream_logs(
+    creds: Creds, slug: str, wait_seconds: int = 300, idle: float | None = None
+) -> Iterator[str]:
     """Yield log lines from a running session.
 
     While the session lives the API returns SSE; once it has terminated it
     returns the persisted JSON log instead, so we branch on content-type
-    exactly as the SDK docstring instructs.
+    exactly as the SDK docstring instructs. `idle` ends the stream once no line
+    has come for that many seconds: the log so far, without following it.
     """
     user, _, kslug = slug.partition("/")
     payload = {
@@ -249,18 +256,22 @@ def stream_logs(creds: Creds, slug: str, wait_seconds: int = 300) -> Iterator[st
         f"{BASE}/{KERNELS}/GetKernelSessionLogsStream",
         json=payload,
         headers=creds.headers,
-        timeout=httpx.Timeout(30.0, read=None),
+        timeout=httpx.Timeout(30.0, read=idle),
     ) as r:
         if r.status_code >= 400:
             r.read()
             raise KaggleError(f"logs: HTTP {r.status_code}: {r.text[:300]}", r.status_code)
         if "text/event-stream" in r.headers.get("content-type", ""):
-            for line in r.iter_lines():
-                if line.startswith("data:"):
-                    data = line[5:].strip()
-                    if data == "END_OF_LOG":
-                        return
-                    yield _log_text(data)
+            try:
+                for line in r.iter_lines():
+                    if line.startswith("data:"):
+                        data = line[5:].strip()
+                        if data == "END_OF_LOG":
+                            return
+                        yield _log_text(data)
+            except httpx.ReadTimeout:
+                if idle is None:
+                    raise
         else:
             for entry in json.loads(r.read() or b"[]"):
                 yield _log_text(entry)

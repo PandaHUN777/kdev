@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from . import api, bootstrap, config, ui
+from . import api, bootstrap, config, persistence, ui
 from .errors import KdevError
 
 PLACEHOLDER = "# kdev workspace notebook -- source is generated per session.\n"
@@ -100,10 +100,10 @@ def describe(cfg: config.Config, creds: api.Creds) -> dict:
             ]
         except api.KaggleError as e:
             out["errors"].append(f"members: {e}")
-    try:
-        out["files"] = len(api.session_output(creds, cfg.notebook))
-    except api.KaggleError:
-        out["files"] = None
+    # The newest version with files, not the newest version: while a box runs
+    # its own has none yet, and "0 files" reads as everything being lost.
+    out["saved"], files = persistence.newest_saved(creds, cfg.notebook, out["version"])
+    out["files"] = len(files) if out["saved"] else None
     return out
 
 
