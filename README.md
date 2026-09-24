@@ -152,7 +152,7 @@ Needs Python 3.11+, `ssh`, and a Kaggle account in a Kaggle group.
 
 ```bash
 uv tool install git+https://github.com/tushar-mahalya/kdev          # latest
-uv tool install git+https://github.com/tushar-mahalya/kdev@v0.1.0   # a release
+uv tool install git+https://github.com/tushar-mahalya/kdev@v0.1.2   # a release
 kdev setup
 ```
 

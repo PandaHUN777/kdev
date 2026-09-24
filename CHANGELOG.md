@@ -6,6 +6,8 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-24
+
 ### Fixed
 - The `kdev up` status board smeared across the terminal once the box was up:
   frames repeated and lines drifted right. kdev's background ssh calls asked
