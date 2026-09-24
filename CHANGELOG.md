@@ -6,6 +6,9 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Works with rich 15.
+
 ## [0.1.2] - 2026-09-24
 
 ### Fixed
