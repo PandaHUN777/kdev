@@ -1,10 +1,31 @@
-# kdev
+<p align="center">
+  <img src="docs/assets/kdev-logo.png" alt="kdev" width="520">
+</p>
 
-[![ci](https://github.com/tushar-mahalya/kdev/actions/workflows/ci.yml/badge.svg)](https://github.com/tushar-mahalya/kdev/actions/workflows/ci.yml)
+<p align="center">
+  <b>A Kaggle notebook as your remote dev box.</b><br>
+  Start it with one command, work in it from VS Code or a shell, and leave whenever you like.<br>
+  Your files are there next time — on any account in your Kaggle group, from any machine.
+</p>
 
-**A Kaggle notebook as your remote dev box.** Start it with one command, work
-in it from VS Code or a shell, and leave whenever you like. Your files are
-there next time — on any account in your Kaggle group, from any machine.
+<p align="center">
+  <a href="https://github.com/tushar-mahalya/kdev/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tushar-mahalya/kdev/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/tushar-mahalya/kdev/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/tushar-mahalya/kdev?color=00b8d4"></a>
+  <img alt="Python 3.11 | 3.12 | 3.13" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea44f"></a>
+  <a href="#contributing"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-00b8d4"></a>
+</p>
+
+<p align="center">
+  <a href="#install-and-set-up">Install</a> ·
+  <a href="#everyday-use">Everyday use</a> ·
+  <a href="#your-files">Your files</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#troubleshooting">Troubleshooting</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
+
+<br>
 
 ```bash
 kdev setup      # once per machine
@@ -36,7 +57,7 @@ kdev down       # optional: stop early and hand the quota back
 - [Settings](#settings)
 - [Troubleshooting](#troubleshooting)
 - [Security and limits](#security-and-limits)
-- [Development](#development)
+- [Contributing](#contributing)
 
 ---
 
@@ -439,9 +460,32 @@ kdev logs          # what the box itself is saying
 
 ---
 
-## Development
+## Contributing
+
+Contributions are welcome — bug reports, fixes, docs and features alike. kdev
+is small and opinionated, so for anything bigger than a fix, open an issue
+first and say what you want to change and why. It saves you writing code that
+goes a different way than the project.
+
+### Ways to help
+
+- **Report a bug.** Open an issue with what you ran, what you expected and
+  what happened. The output of the same command with `-v` (`kdev -v up …`)
+  helps most. It logs every Kaggle API call; check it for anything you would
+  rather not share before you paste it.
+- **Fix something.** Pick an open issue and say in it that you are on it, so
+  two people don't fix the same thing.
+- **Improve the docs.** If something here was unclear when you set up, it will
+  be unclear to the next person too.
+- **Report a vulnerability** privately, as [SECURITY.md](SECURITY.md)
+  describes, never in a public issue.
+
+### Set up
+
+You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
+git clone https://github.com/tushar-mahalya/kdev && cd kdev
 uv sync
 uv run pre-commit install        # hooks on commit, tests on push
 uv run pytest                    # 199 tests, no network needed
@@ -453,10 +497,19 @@ private-key detection), config validation and a lockfile check; every push
 runs the tests. CI runs the same hooks, the tests on Python 3.11–3.13, a
 build-and-install check, and `gitleaks` over the full history.
 
-**Releasing:** bump `version` in `pyproject.toml`, add a `CHANGELOG.md`
-section, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow
-checks that the tag matches the version, runs the tests, and publishes a
-GitHub release with the wheel and sdist attached.
+### Trying a change against real Kaggle
+
+The test suite needs no Kaggle account, and most changes need nothing more.
+When yours touches the box, the tunnel or the restore, try it for real:
+
+- Use **your own** workspace (`kdev workspace create --group <slug>`), not a
+  shared one someone else works in.
+- Start **CPU boxes**: `uv run kdev up --gpu none --hours 1`. They cost no GPU
+  quota. A GPU run spends the quota of whichever account starts it.
+- `kdev down` when you are done, and `kdev workspace files` to see exactly
+  what was saved.
+
+### How the code is laid out
 
 ```mermaid
 flowchart LR
@@ -483,3 +536,33 @@ flowchart LR
 Tests are split by module. `tests/test_cli.py` runs every command through
 the real entry point against a fake Kaggle. `tests/test_kdev_box.py` runs the
 on-box restore against a temporary directory.
+
+### Pull requests
+
+- **One change per pull request**, with a description of the problem it
+  solves and how you checked it.
+- **A bug fix comes with a test** that fails without the fix. New behaviour
+  comes with the smallest test that would catch it breaking. Tests stay
+  offline: use the fake Kaggle in `tests/test_cli.py`.
+- **Match the code around you.** `kdev_box.py` stays standard-library only.
+  Everything the user sees goes through `ui.py`. A failure the user can act on
+  is a `KdevError` with the command that fixes it.
+- **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/)
+  (`fix:`, `feat:`, `docs:`, `test:`, `ci:`, `refactor:`), with the *why* in
+  the body.
+- **Record what users will notice** under `## [Unreleased]` in
+  [CHANGELOG.md](CHANGELOG.md), and update this README if a command or its
+  behaviour changes.
+
+### Releasing
+
+For maintainers: bump `version` in `pyproject.toml`, move the `Unreleased`
+notes in `CHANGELOG.md` under the new version, then
+`git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow checks that
+the tag matches the version, runs the tests, and publishes a GitHub release
+with the wheel and sdist attached.
+
+### License
+
+kdev is [MIT licensed](LICENSE). By contributing, you agree that your
+contributions are licensed under the same terms.
