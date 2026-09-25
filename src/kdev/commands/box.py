@@ -7,6 +7,7 @@ import shlex
 import socket
 import subprocess
 import time
+from typing import Annotated
 
 import typer
 from rich.text import Text
@@ -536,9 +537,10 @@ def _remote_port_open(alias: str, port: int) -> bool:
 
 
 def forward(
-    ports: list[str] = typer.Argument(
-        ..., help="Port(s): 8888, or LOCAL:REMOTE such as 9000:8888."
-    ),
+    ports: Annotated[
+        list[str],
+        typer.Argument(help="Port(s): 8888, or LOCAL:REMOTE such as 9000:8888."),
+    ],
 ) -> None:
     """Reach services on the box through localhost."""
     cfg = config.load()
