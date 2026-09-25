@@ -127,9 +127,7 @@ def newest_saved(creds: api.Creds, notebook: str, latest: int) -> tuple[str, dic
     return "", {}
 
 
-def session_history(
-    creds: api.Creds, notebook: str, latest: int, limit: int = 10
-) -> list[dict]:
+def session_history(creds: api.Creds, notebook: str, latest: int, limit: int = 10) -> list[dict]:
     """Recent saved sessions, newest first.
 
     Empty/source-only versions are skipped, matching the restore walk. State
