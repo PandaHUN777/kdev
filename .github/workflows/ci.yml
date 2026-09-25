@@ -1,8 +1,9 @@
 name: ci
+# CI trigger after enabling Actions
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci-test/**"]
   pull_request:
   workflow_dispatch:
 
