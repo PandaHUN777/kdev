@@ -557,7 +557,9 @@ def test_forward_ctrl_c_exits_130(home, kaggle, capsys, monkeypatch):
     monkeypatch.setattr(session, "reachable", lambda alias, timeout=10: True)
     monkeypatch.setattr("kdev.commands.box._local_port_free", lambda port: True)
     monkeypatch.setattr("kdev.commands.box._remote_port_open", lambda alias, port: True)
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
     code, _, err = kdev(capsys, "forward", "8888")
     assert code == 130
     assert "Traceback" not in err
