@@ -560,14 +560,14 @@ def forward(
         if not _local_port_free(local):
             raise KdevError(
                 f"Local port {local} is already in use.",
-                f"Choose another local port, for example {local + 1}:{_remote}.",
+                f"Choose another local port with LOCAL:{_remote}, for example 9000:{_remote}.",
             )
 
     alias = cfg.ssh_host_alias
     if not session.reachable(alias):
         raise KdevError("Could not reach the box over ssh.", "Is it up? kdev status")
 
-    for _local, remote in mappings:
+    for remote in dict.fromkeys(remote for _local, remote in mappings):
         if not _remote_port_open(alias, remote):
             raise KdevError(
                 f"Nothing is listening on port {remote} on the box.",
