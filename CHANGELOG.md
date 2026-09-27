@@ -9,6 +9,8 @@ All notable changes are recorded here. The format follows
 ### Fixed
 - `kdev config set gpu tpu` lowers `hours` to 9h if it was above the TPU cap,
   preventing repeated warnings on `kdev up`.
+- `kdev logs` hides the kernel's debugger start-up warnings; `--all` still
+  shows them.
 
 ## [0.1.4] - 2026-09-24
 
