@@ -551,18 +551,18 @@ def forward(
         raise KdevError("No box hostname known yet.", "Start or find it with: kdev up")
 
     mappings = [_forward_mapping(spec) for spec in ports]
-    local_ports = [local for local, _remote in mappings]
+    local_ports = [local for local, _ in mappings]
     if len(local_ports) != len(set(local_ports)):
         raise KdevError(
             "The same local port was requested more than once.",
             "Use a different local port, for example 9000:8888.",
         )
 
-    for local, _remote in mappings:
+    for local, remote in mappings:
         if not _local_port_free(local):
             raise KdevError(
                 f"Local port {local} is already in use.",
-                f"Choose another local port with LOCAL:{_remote}, for example 9000:{_remote}.",
+                f"Choose another local port with LOCAL:{remote}, for example 9000:{remote}.",
             )
 
     alias = cfg.ssh_host_alias
@@ -577,11 +577,13 @@ def forward(
             )
 
     for local, remote in mappings:
-        ui.ok(f"http://localhost:{local}", f"box localhost:{remote}")
+        ui.ok(f"http://localhost:{local}  {ui.g('arrow')}  port {remote} on the box")
 
     command = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes"]
     for local, remote in mappings:
-        command += ["-L", f"{local}:localhost:{remote}"]
+        # Loopback explicitly: a GatewayPorts setting elsewhere in the user's
+        # ssh config must never expose the box's ports to their network.
+        command += ["-L", f"127.0.0.1:{local}:localhost:{remote}"]
     command.append(alias)
     raise typer.Exit(subprocess.run(command).returncode)
 

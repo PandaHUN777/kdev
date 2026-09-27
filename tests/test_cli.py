@@ -521,9 +521,9 @@ def test_forward_builds_one_ssh_tunnel_for_all_ports(home, kaggle, capsys, monke
             "-o",
             "ExitOnForwardFailure=yes",
             "-L",
-            "8888:localhost:8888",
+            "127.0.0.1:8888:localhost:8888",
             "-L",
-            "9000:localhost:8888",
+            "127.0.0.1:9000:localhost:8888",
             "kaggle",
         ]
     ]
