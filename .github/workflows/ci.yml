@@ -52,7 +52,7 @@ jobs:
         run: uv run pytest
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
-        run: uv run pytest --cov=kdev --cov-report=term --cov-report=markdown:coverage.md
+        run: uv run pytest --cov=kdev --cov-report=term-missing --cov-report=markdown:coverage.md
       - name: Add coverage summary
         if: ${{ always() && matrix.os == 'ubuntu-latest' && matrix.python == '3.12' }}
         shell: bash
