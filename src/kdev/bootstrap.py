@@ -225,23 +225,24 @@ def snapshot(dest):
 END_WARNING_MINUTES = (15, 5)
 
 
-def warn_ending(previous_left, left, warned):
-    """Announce each session-end threshold once, in logs and every shell."""
+def warn_ending(previous_left, left, warned, pts_dir="/dev/pts"):
+    """Announce each session-end threshold once, in logs and open terminals."""
     for minutes in END_WARNING_MINUTES:
         threshold = minutes * 60
         if minutes in warned or not (previous_left >= threshold >= left):
             continue
         print(f"KDEV_ENDING minutes_left={minutes}", flush=True)
-        try:
-            subprocess.run(
-                ["wall", f"kdev session ends in {minutes} minutes"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
+        message = f"\r\nkdev: session ends in {minutes} minutes\r\n".encode()
+        # VS Code terminals may not be recorded in utmp, so wall misses them.
+        for tty in pathlib.Path(pts_dir).glob("[0-9]*"):
+            try:
+                fd = os.open(tty, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
+                try:
+                    os.write(fd, message)
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass  # a terminal we cannot write to must never end the session
         warned.add(minutes)
 
 
@@ -303,6 +304,7 @@ def main():
     next_checkpoint = time.time() + CHECKPOINT_SECONDS
     next_meta = time.time() + META_SECONDS
     warned = set()
+    # Setup may take long enough to cross a threshold before the first tick.
     previous_left = CFG["hold_seconds"]
     try:
         stop_file = pathlib.Path("/kaggle/working/.kdev-stop")
