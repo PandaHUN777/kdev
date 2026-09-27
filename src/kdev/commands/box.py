@@ -7,7 +7,7 @@ import shlex
 import socket
 import subprocess
 import time
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from rich.text import Text
@@ -356,7 +356,7 @@ def _open(alias: str, how: str | None, interactive: bool) -> None:
         ui.hint("Back on your machine. The box is still running: kdev down stops it.")
 
 
-def _explain_no_tunnel(creds: api.Creds, target: str, seen: dict) -> None:
+def _explain_no_tunnel(creds: api.Creds, target: str, seen: dict) -> NoReturn:
     try:
         state = api.session_status(creds, target)
     except api.KaggleError:
@@ -697,7 +697,7 @@ def status(
 def logs(
     account: str = typer.Option("", "--account", "-a", help="Read as this account."),
     lines: int = typer.Option(0, "--lines", "-n", help="Stop after N lines (default: follow)."),
-    everything: bool = typer.Option(False, "--all", help="Include kdev's heartbeat lines."),
+    everything: bool = typer.Option(False, "--all", help="Include heartbeat and debugger lines."),
 ) -> None:
     """Stream the session's log."""
     cfg = config.load()
@@ -705,7 +705,7 @@ def logs(
     shown = 0
     for line in api.stream_logs(cfg.profile(account).creds, target):
         text = line.rstrip()
-        if not everything and text.startswith("KDEV_ALIVE"):
+        if not everything and text.startswith(("KDEV_ALIVE", "0.00s - ")):
             continue
         ui.console.print(text, highlight=False, markup=False)
         shown += 1

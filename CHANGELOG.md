@@ -7,6 +7,10 @@ All notable changes are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- CI reports test coverage from one Linux matrix job and includes the coverage
+  table in each pull request's job summary.
+- `uv run basedpyright` type-checks `src` and `tests` in basic mode; it runs on
+  every commit with the pre-commit hooks and in CI with the other checks.
 - `kdev forward` opens one or more localhost port forwards to services on the
   box, including `LOCAL:REMOTE` mappings, with clear checks for occupied local
   ports and services that are not listening remotely.
@@ -14,6 +18,8 @@ All notable changes are recorded here. The format follows
 ### Fixed
 - `kdev config set gpu tpu` lowers `hours` to 9h if it was above the TPU cap,
   preventing repeated warnings on `kdev up`.
+- `kdev logs` hides the kernel's debugger start-up warnings; `--all` still
+  shows them.
 
 ## [0.1.4] - 2026-09-24
 
