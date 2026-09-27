@@ -135,7 +135,7 @@ def session_history(creds: api.Creds, notebook: str, latest: int, limit: int = 1
     same version label.
     """
     rows: list[dict] = []
-    for number in range(latest, 0, -1):
+    for number in range(latest, max(0, latest - WALK_BACK), -1):
         if len(rows) >= limit:
             break
         label = f"v{number}"

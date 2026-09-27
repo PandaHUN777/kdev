@@ -6,7 +6,10 @@ what a user would type and what they must see.
 """
 
 import json
+import os
 import sys
+import time
+from datetime import datetime
 
 import pytest
 
@@ -178,7 +181,42 @@ def test_the_overview_shows_the_box_and_every_account(home, kaggle, capsys):
     assert "kdev up" in out  # the next step, when not in a terminal
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="changing the process timezone needs tzset")
+def test_history_formats_UTC_timestamps_in_the_local_timezone(monkeypatch):
+    from kdev.commands.box import _history_time
+
+    previous_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "Asia/Kolkata")
+    time.tzset()
+    try:
+        started = "2026-09-25T10:00:00Z"
+        ended = datetime.fromisoformat("2026-09-25T10:00:00+00:00").timestamp()
+        assert _history_time(started) == _history_time(ended) == "2026-09-25 15:30"
+    finally:
+        if previous_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", previous_tz)
+        time.tzset()
+
+
 # --- history --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "label"),
+    [
+        ("COMPLETE", "finished"),
+        ("ERROR", "ended with an error"),
+        ("CANCEL_ACKNOWLEDGED", "was cancelled"),
+        ("CANCEL_REQUESTED", "is being cancelled"),
+        (api.NEVER_RUN, "never run yet"),
+    ],
+)
+def test_history_status_labels_match_status_command(raw, label):
+    from kdev.commands.box import _run_status_label
+
+    assert _run_status_label(raw) == label
 
 
 def test_history_lists_recent_saved_sessions(home, kaggle, capsys):
@@ -216,8 +254,8 @@ def test_history_lists_recent_saved_sessions(home, kaggle, capsys):
 
     code, out, err = kdev(capsys, "history", "-n", "2")
     assert code == 0, err
-    assert "v3" in out and "alice" in out and "COMPLETE" in out
-    assert "v2" in out and "bob" in out and "ERROR" in out
+    assert "v3" in out and "alice" in out and "finished" in out
+    assert "v2" in out and "bob" in out
     assert "v1" not in out
 
 

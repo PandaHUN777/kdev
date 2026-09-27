@@ -7,6 +7,7 @@ import shlex
 import socket
 import subprocess
 import time
+from datetime import UTC, datetime
 from typing import Annotated, NoReturn
 
 import typer
@@ -591,6 +592,17 @@ def forward(
 # --- status -------------------------------------------------------------------
 
 
+def _run_status_label(status: object) -> str:
+    value = str(status)
+    return {
+        "COMPLETE": "finished",
+        "ERROR": "ended with an error",
+        "CANCEL_ACKNOWLEDGED": "was cancelled",
+        "CANCEL_REQUESTED": "is being cancelled",
+        api.NEVER_RUN: "never run yet",
+    }.get(value, value.lower())
+
+
 def status(
     account: str = typer.Option("", "--account", "-a", help="Check as this account."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON instead."),
@@ -641,14 +653,7 @@ def status(
     )
     rows: list[tuple[str, object]] = []
     if not running:
-        last = {
-            "COMPLETE": "finished",
-            "ERROR": "ended with an error",
-            "CANCEL_ACKNOWLEDGED": "was cancelled",
-            "CANCEL_REQUESTED": "is being cancelled",
-            api.NEVER_RUN: "never run yet",
-        }
-        rows.append(("last run", last.get(info["status"], info["status"].lower())))
+        rows.append(("last run", _run_status_label(info["status"])))
         if info["status"] == api.NEVER_RUN:
             rows.append(("files", "nothing saved yet; `kdev up` starts it"))
         else:
@@ -699,7 +704,14 @@ def _history_time(value: object) -> str:
         return "—"
     if isinstance(value, (int, float)):
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(value))
-    return str(value).replace("T", " ").removesuffix("Z")
+    text = str(value)
+    try:
+        instant = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(instant.timestamp()))
 
 
 def history(
@@ -736,7 +748,7 @@ def history(
                 row["run_by"] or "—",
                 _history_time(row["started"]),
                 _history_time(row["ends"]),
-                row["status"],
+                _run_status_label(row["status"]),
                 row["files"],
                 restore,
             )
