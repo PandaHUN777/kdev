@@ -9,6 +9,8 @@ All notable changes are recorded here. The format follows
 ### Added
 - CI reports test coverage from one Linux matrix job and includes the coverage
   table in each pull request's job summary.
+- `uv run basedpyright` type-checks `src` and `tests` in basic mode; it runs on
+  every commit with the pre-commit hooks and in CI with the other checks.
 
 ### Fixed
 - `kdev config set gpu tpu` lowers `hours` to 9h if it was above the TPU cap,
