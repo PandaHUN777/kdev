@@ -14,6 +14,9 @@ All notable changes are recorded here. The format follows
 - `kdev forward` opens one or more localhost port forwards to services on the
   box, including `LOCAL:REMOTE` mappings, with clear checks for occupied local
   ports and services that are not listening remotely.
+- `kdev history` shows recent saved sessions, including who ran them, their
+  status, file count and restore state; `-n` limits rows and `--json` emits
+  the same data for scripts.
 
 - The box warns every open shell and the session log once at 15 minutes and
   once at 5 minutes before the session ends.
