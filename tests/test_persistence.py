@@ -96,6 +96,16 @@ def _versions(monkeypatch, table):
     return w
 
 
+def test_session_history_caps_scanned_versions_independently_of_limit(monkeypatch):
+    from kdev import persistence as w
+
+    scanned = []
+    monkeypatch.setattr(w, "version_files", lambda c, nb, label: scanned.append(label) or None)
+
+    assert w.session_history(api.Creds("u"), "a/b", latest=100, limit=2) == []
+    assert scanned == [f"v{number}" for number in range(100, 100 - w.WALK_BACK, -1)]
+
+
 def test_a_complete_saved_version_is_used_on_its_own(monkeypatch):
     w = _versions(monkeypatch, {"v5": ({"a.py": "u"}, {"restored": True, "layers": ["v4"]})})
     assert w.plan_layers(api.Creds("u"), "a/b", 5) == ["v5"]

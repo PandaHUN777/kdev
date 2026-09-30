@@ -6,7 +6,10 @@ what a user would type and what they must see.
 """
 
 import json
+import os
 import sys
+import time
+from datetime import datetime
 
 import pytest
 
@@ -18,6 +21,8 @@ class FakeKaggle:
 
     def __init__(self):
         self.status = "COMPLETE"
+        self.statuses: dict[str, str] = {}
+        self.states: dict[str, dict] = {}
         self.version = 3
         self.saved: list[dict] = []
         self.cancelled: list[tuple[str, int]] = []
@@ -31,7 +36,12 @@ class FakeKaggle:
 
     def install(self, monkeypatch):
         mp = monkeypatch.setattr
-        mp(api, "session_status", lambda c, s: {"status": self.status})
+        mp(
+            api,
+            "session_status",
+            lambda c, s, v="": {"status": self.statuses.get(v, self.status)},
+        )
+        mp(persistence, "_state", lambda files: self.states.get(files.get(persistence.STATE, "")))
         mp(
             api,
             "get_kernel",
@@ -169,6 +179,125 @@ def test_the_overview_shows_the_box_and_every_account(home, kaggle, capsys):
     assert code == 0
     assert "stopped" in out and "alice" in out and "bob" in out
     assert "kdev up" in out  # the next step, when not in a terminal
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="changing the process timezone needs tzset")
+def test_history_formats_UTC_timestamps_in_the_local_timezone(monkeypatch):
+    from kdev.commands.box import _history_time
+
+    previous_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "Asia/Kolkata")
+    time.tzset()
+    try:
+        started = "2026-09-25T10:00:00Z"
+        ended = datetime.fromisoformat("2026-09-25T10:00:00+00:00").timestamp()
+        assert _history_time(started) == _history_time(ended) == "2026-09-25 15:30"
+    finally:
+        if previous_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", previous_tz)
+        time.tzset()
+
+
+# --- history --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "label"),
+    [
+        ("COMPLETE", "finished"),
+        ("ERROR", "ended with an error"),
+        ("CANCEL_ACKNOWLEDGED", "was cancelled"),
+        ("CANCEL_REQUESTED", "is being cancelled"),
+        (api.NEVER_RUN, "never run yet"),
+    ],
+)
+def test_history_status_labels_match_status_command(raw, label):
+    from kdev.commands.box import _run_status_label
+
+    assert _run_status_label(raw) == label
+
+
+def test_history_lists_recent_saved_sessions(home, kaggle, capsys):
+    configured()
+    kaggle.version = 4
+    kaggle.outputs = {
+        "v4": [],
+        "v3": [
+            {"name": "notes.md", "url": "u3"},
+            {"name": ".kdev/state.json", "url": "state:v3"},
+        ],
+        "v2": [
+            {"name": "src/app.py", "url": "u2"},
+            {"name": "data.bin", "url": "d2"},
+            {"name": ".kdev/state.json", "url": "state:v2"},
+        ],
+        "v1": [{"name": "old.txt", "url": "u1"}],
+    }
+    kaggle.states = {
+        "state:v3": {
+            "run_by": "alice",
+            "started": "2026-09-25T10:00:00Z",
+            "ends": 1790334000,
+            "restored": True,
+            "finished": "2026-09-25T10:01:00Z",
+        },
+        "state:v2": {
+            "run_by": "bob",
+            "started": "2026-09-24T12:00:00Z",
+            "ends": 1790251200,
+            "restored": False,
+        },
+    }
+    kaggle.statuses = {"v3": "COMPLETE", "v2": "ERROR", "v1": "CANCEL_ACKNOWLEDGED"}
+
+    code, out, err = kdev(capsys, "history", "-n", "2")
+    assert code == 0, err
+    assert "v3" in out and "alice" in out and "finished" in out
+    assert "v2" in out and "bob" in out
+    assert "v1" not in out
+
+
+def test_history_json_is_machine_readable(home, kaggle, capsys):
+    configured()
+    kaggle.version = 2
+    kaggle.outputs = {
+        "v2": [
+            {"name": "work.py", "url": "u2"},
+            {"name": ".kdev/state.json", "url": "state:v2"},
+        ],
+        "v1": [{"name": "plain.txt", "url": "u1"}],
+    }
+    kaggle.states = {
+        "state:v2": {
+            "run_by": "alice",
+            "started": "2026-09-25T10:00:00Z",
+            "ends": 1790334000,
+            "restored": True,
+            "finished": "2026-09-25T10:02:00Z",
+        }
+    }
+    kaggle.statuses = {"v2": "COMPLETE", "v1": "CANCEL_ACKNOWLEDGED"}
+
+    code, out, err = kdev(capsys, "history", "--json")
+    data = json.loads(out)
+    assert code == 0, err
+    assert data["notebook"] == "alice/box"
+    assert [row["version"] for row in data["sessions"]] == ["v2", "v1"]
+    assert data["sessions"][0] == {
+        "version": "v2",
+        "run_by": "alice",
+        "started": "2026-09-25T10:00:00Z",
+        "ends": 1790334000,
+        "status": "COMPLETE",
+        "files": 1,
+        "restored": True,
+        "restore_finished": "2026-09-25T10:02:00Z",
+    }
+    assert data["sessions"][1]["status"] == "CANCEL_ACKNOWLEDGED"
+    assert data["sessions"][1]["run_by"] is None
+    assert data["sessions"][1]["restored"] is None
 
 
 # --- accounts -----------------------------------------------------------------

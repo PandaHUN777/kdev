@@ -7,6 +7,7 @@ import shlex
 import socket
 import subprocess
 import time
+from datetime import UTC, datetime
 from typing import Annotated, NoReturn
 
 import typer
@@ -591,6 +592,17 @@ def forward(
 # --- status -------------------------------------------------------------------
 
 
+def _run_status_label(status: object) -> str:
+    value = str(status)
+    return {
+        "COMPLETE": "finished",
+        "ERROR": "ended with an error",
+        "CANCEL_ACKNOWLEDGED": "was cancelled",
+        "CANCEL_REQUESTED": "is being cancelled",
+        api.NEVER_RUN: "never run yet",
+    }.get(value, value.lower())
+
+
 def status(
     account: str = typer.Option("", "--account", "-a", help="Check as this account."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON instead."),
@@ -641,14 +653,7 @@ def status(
     )
     rows: list[tuple[str, object]] = []
     if not running:
-        last = {
-            "COMPLETE": "finished",
-            "ERROR": "ended with an error",
-            "CANCEL_ACKNOWLEDGED": "was cancelled",
-            "CANCEL_REQUESTED": "is being cancelled",
-            api.NEVER_RUN: "never run yet",
-        }
-        rows.append(("last run", last.get(info["status"], info["status"].lower())))
+        rows.append(("last run", _run_status_label(info["status"])))
         if info["status"] == api.NEVER_RUN:
             rows.append(("files", "nothing saved yet; `kdev up` starts it"))
         else:
@@ -689,6 +694,80 @@ def status(
     ui.card(title, rows, tone="ok" if running else "muted")
     if running and not reachable and not saving:
         ui.hint("Running but not reachable yet: give it a minute, or `kdev logs` to see why.")
+
+
+# --- history ------------------------------------------------------------------
+
+
+def _history_time(value: object) -> str:
+    if value in (None, ""):
+        return "—"
+    if isinstance(value, (int, float)):
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(value))
+    text = str(value)
+    try:
+        instant = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(instant.timestamp()))
+
+
+def history(
+    limit: int = typer.Option(10, "--limit", "-n", min=1, help="Show at most N saved sessions."),
+    account: str = typer.Option("", "--account", "-a", help="Read as this account."),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON instead."),
+) -> None:
+    """Past saved sessions: who ran them, how they ended and what they saved."""
+    cfg = config.load()
+    target = need_notebook(cfg)
+    creds = cfg.profile(account).creds
+    with ui.spinner("reading session history…"):
+        try:
+            latest = int(api.get_kernel(creds, target).get("currentVersionNumber") or 0)
+            rows = persistence.session_history(creds, target, latest, limit)
+        except api.KaggleError as e:
+            raise KdevError(f"Could not read the history of {target}.", str(e)) from e
+
+    if as_json:
+        ui.emit_json({"notebook": target, "sessions": rows})
+        return
+
+    if not rows:
+        ui.hint("no saved sessions yet")
+        return
+
+    display = []
+    for row in rows:
+        restored = row["restored"]
+        restore = "yes" if restored is True else "no" if restored is False else "—"
+        display.append(
+            (
+                row["version"],
+                row["run_by"] or "—",
+                _history_time(row["started"]),
+                _history_time(row["ends"]),
+                _run_status_label(row["status"]),
+                row["files"],
+                restore,
+            )
+        )
+    ui.console.print(
+        ui.table(
+            [
+                ("version", "left"),
+                ("account", "left"),
+                ("started", "left"),
+                ("ends", "left"),
+                ("status", "left"),
+                ("files", "right"),
+                ("restored", "left"),
+            ],
+            display,
+            title=target,
+        )
+    )
 
 
 # --- logs ---------------------------------------------------------------------
