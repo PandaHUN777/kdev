@@ -304,7 +304,7 @@ def main():
     next_checkpoint = time.time() + CHECKPOINT_SECONDS
     next_meta = time.time() + META_SECONDS
     warned = set()
-    # Setup may take long enough to cross a threshold before the first tick.
+    # Seed from the full duration to catch thresholds crossed before the first tick.
     previous_left = CFG["hold_seconds"]
     try:
         stop_file = pathlib.Path("/kaggle/working/.kdev-stop")

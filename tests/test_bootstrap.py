@@ -187,6 +187,7 @@ def test_session_end_warnings_write_each_pty_nonblocking_and_fire_once(
 
     opened = []
     writes = []
+    delivered = []
     original_open = os.open
     original_write = os.write
 
@@ -196,7 +197,11 @@ def test_session_end_warnings_write_each_pty_nonblocking_and_fire_once(
 
     def tracked_write(fd, data):
         writes.append(data)
-        return original_write(fd, data)
+        if len(writes) == 1:
+            raise BlockingIOError("terminal buffer is full")
+        written = original_write(fd, data)
+        delivered.append(data)
+        return written
 
     monkeypatch.setattr(os, "open", tracked_open)
     monkeypatch.setattr(os, "write", tracked_write)
@@ -221,9 +226,11 @@ def test_session_end_warnings_write_each_pty_nonblocking_and_fire_once(
     assert all(flags & os.O_NONBLOCK for _, flags in opened)
     assert writes.count(b"\r\nkdev: session ends in 15 minutes\r\n") == 2
     assert writes.count(b"\r\nkdev: session ends in 5 minutes\r\n") == 2
+    assert delivered.count(b"\r\nkdev: session ends in 15 minutes\r\n") == 1
+    assert delivered.count(b"\r\nkdev: session ends in 5 minutes\r\n") == 2
 
     main = src[src.index("def main():") :]
-    assert "Setup may take long enough to cross a threshold before the first tick." in main
+    assert "Seed from the full duration to catch thresholds crossed before the first tick." in main
     assert 'previous_left = CFG["hold_seconds"]' in main
     assert "warn_ending(previous_left, left, warned)" in main
     assert main.index("warn_ending(previous_left, left, warned)") < main.index(
